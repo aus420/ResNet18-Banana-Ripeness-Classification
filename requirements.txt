@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+opencv-python
+psutil
+torch==2.2.2
+torchvision
+scikit-learn
+joblib
+ipython

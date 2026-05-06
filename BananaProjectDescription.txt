@@ -1,0 +1,177 @@
+ResNet18 Banana Ripeness Classification – Project Overview
+=========================================================
+
+This project uses a fine‑tuned ResNet18 convolutional neural network to classify banana images into supervised categories such as **unripe, ripe, overripe, and rotten**. The model learns from labeled examples, so each training image is paired with a known class label; during inference, the network predicts the most likely class for a new image based on patterns it has learned.
+
+Why ResNet18 works well here
+----------------------------
+
+ResNet18 is a balanced backbone: it is deep enough (18 layers) to capture complex color and texture cues that distinguish different ripeness stages, but small and efficient enough to train and run quickly on a moderate dataset of banana images. Residual connections (the “skip connections” in ResNet) help gradients flow through the network, which stabilizes training and reduces the risk of vanishing gradients in deeper networks. In practice, this architecture tends to reach strong accuracy on natural‑image tasks like fruit quality classification without requiring huge datasets or enormous compute.
+
+Role of supervised labels in ripeness prediction
+------------------------------------------------
+
+The project is **fully supervised**: each input image is associated with a label like `unripe`, `ripe`, `overripe`, or `rotten`. These labels:
+
+- Give the loss function a concrete target so the model can measure how wrong its predictions are on each training step.
+- Encourage the network to learn discriminative visual features: for example, **greenish hue and stiff texture** for unripe, **bright yellow with a few spots** for ripe, or **dark, heavily spotted/black skin** for overripe or rotten.
+
+Over many labeled examples, ResNet18 learns a mapping from pixel patterns (colors, textures, shapes) to these discrete states. This makes it suitable for applications like automated sorting lines, quality control in supply chains, or mobile apps that assist users in choosing bananas at the right ripeness.
+
+Code structure overview
+-----------------------
+
+1. **HTML visual styling layer**  
+   The notebook begins by defining a visual theme (hot‑pink/yellow color scheme) and a set of helper functions (`show_section`, `show_subsection`, `show_paragraph`, `show_bullets`, `styled_dataframe`, etc.). These functions:
+   - Use HTML and inline CSS to render banners, headings, and bullet lists so that each section of the experiment (dataset, model, training, evaluation) is clearly separated and visually distinctive.
+   - Style pandas DataFrames with alternating row colors, bold headers, and captions, making tables like “Class Distribution”, “Environment Audit”, and “Ablation Results” easier to read and present in a report.
+   - Apply a consistent look to Matplotlib plots (axes colors, tick styles, grid, and colormap).  
+   This layer does **not** affect the actual machine learning; it is there to make results more interpretable and presentation‑ready.
+
+2. **ML pipeline (data, transforms, loaders, and environment)**  
+   The core ML pipeline includes:
+   - **Environment setup**: setting random seeds for Python, NumPy, and PyTorch; configuring deterministic behavior for CuDNN; and detecting whether a GPU is available. It also audits CPU, GPU, and memory into a DataFrame and saves this as a CSV.
+   - **Dataset definition**: a custom `BananaDataset` class walks through `train`, `val`, and `test` directories, reading all banana images from subfolders named by class. Each subfolder corresponds to a ripeness label (e.g., `unripe`, `ripe`, `overripe`, `rotten`), and the dataset stores both image paths and integer labels.
+   - **Transforms and augmentation**:  
+     - Training images are resized to 224×224 and augmented with random flips, small rotations, and brightness/contrast jitters, improving robustness to viewpoint and lighting variations.  
+     - Validation/test images are resized but not augmented, ensuring evaluation reflects real performance.
+   - **DataLoaders**: batched iterators are created for training, validation, and test splits, controlling batch size and multi‑process loading.  
+   Together, this pipeline ensures that labeled banana images flow cleanly from disk into the ResNet18 model in a reproducible, hardware‑aware way.
+
+3. **Imbalance handling and loss functions**
+   The dataset often has unequal numbers of images in each ripeness category (for example, many more ripe bananas than rotten ones). To handle this, the code:
+   - Computes per‑class sample counts, class priors, and an **imbalance ratio**.
+   - Derives several weighting schemes:
+     - **Inverse frequency weights** (rare classes get higher loss weight).
+     - **Effective number of samples** weights, which approximate how much “unique information” each class contributes when sample counts are skewed.
+   - Builds a **WeightedRandomSampler** that samples minority‑class images more often in each epoch, without duplicating data on disk.
+
+   On top of that, several loss formulations are implemented and compared in a compact ablation:
+   - **Standard cross‑entropy** (baseline).
+   - **Weighted cross‑entropy** using inverse class weights.
+   - **Class‑balanced focal loss**, combining focal loss (down‑weighting easy examples, focusing on hard ones) with effective‑number weights.
+   - **Logit‑adjusted cross‑entropy**, which injects class‑prior information into the logits before computing cross‑entropy, nudging decision boundaries to compensate for skew.
+   - **Prior‑adjusted class‑balanced focal loss**, combining both prior adjustment and class‑balanced focal behavior.
+
+   Each configuration (sampler on/off + choice of loss) is trained briefly, then ranked based on validation macro F1, accuracy, loss, and weighted F1. The best‑performing configuration is selected for the final training run, ensuring that class imbalance is handled based on empirical evidence rather than guesswork.
+
+4. **ResNet18 training and evaluation loop**
+   Once the best imbalance configuration is selected, the final pipeline is:
+
+   - **Model initialization**  
+     - A ResNet18 instance is created and its final fully connected layer is replaced to output the exact number of ripeness classes.  
+     - Pretrained banana‑ripeness weights are loaded into the network so training starts from an already well‑adapted feature extractor rather than from scratch.
+   - **Optimization setup**  
+     - The selected loss function (from the ablation) and sampler settings are used.  
+     - The optimizer is Adam with weight decay, and a ReduceLROnPlateau scheduler lowers the learning rate when validation performance stagnates.
+   - **Epoch‑wise training**  
+     - For each epoch, the training loop iterates over batches:
+       - Images and labels are moved to the chosen device (CPU or GPU).
+       - The model performs a forward pass, the loss is computed and back‑propagated, and the optimizer updates the weights.
+       - Running training loss and accuracy are accumulated across batches.
+     - After training each epoch, the model is evaluated on the validation set:
+       - No gradients are computed; the model runs in evaluation mode.
+       - Validation loss and accuracy are recorded, and macro/weighted F1 can be computed from predictions and ground‑truth labels.
+     - The learning‑rate scheduler observes validation accuracy; if it does not improve, the learning rate is reduced. An early‑stopping counter halts training when no improvement occurs for a specified number of epochs.
+     - The checkpoint with the **best validation accuracy** is saved as `best_model.pth`.
+
+   - **Held‑out test evaluation**  
+     - After training, a fresh ResNet18 is instantiated and the best checkpoint weights are loaded.  
+     - This model is evaluated on the test set only once. Test metrics include:
+       - Test loss and accuracy.
+       - Macro and weighted F1 scores (important when some classes are rare).
+       - Confusion matrix (which ripeness stages are most confused with each other).
+       - Per‑class precision, recall, and F1 (from a classification report).
+       - Per‑class accuracy derived from the confusion matrix.
+
+   - **Reporting and export**  
+     - Training/validation curves, confusion matrix, classification report tables, per‑class accuracies, and CPU preprocessing benchmarks are all plotted and saved.  
+     - CSV summaries and the best model checkpoint are bundled into a zip file for sharing or deployment.
+
+Here’s how to compute each of those three quantities in a simple, formula‑based way.
+
+Assume you have `K` classes and a training set with counts:
+
+- Class 0: \(n_0\) samples  
+- Class 1: \(n_1\) samples  
+- …  
+- Class \(K-1\): \(n_{K-1}\) samples  
+
+Let \(N = n_0 + n_1 + \dots + n_{K-1}\) be the total number of training examples.
+
+***
+
+## 1. Class imbalance ratio
+
+A common, simple definition is:
+
+\[
+\text{imbalance\_ratio} = \frac{\max_k n_k}{\min_k n_k}
+\]
+
+- \(\max_k n_k\): number of samples in the largest class.  
+- \(\min_k n_k\): number of samples in the smallest class.  
+
+If the largest class has 1000 samples and the smallest has 100, the imbalance ratio is \(1000 / 100 = 10\). That means the majority class is 10 times larger than the minority class.
+
+***
+
+## 2. Inverse frequency class weights
+
+These are designed to give **more weight to rare classes** and less weight to common ones.
+
+Step 1: base inverse‑frequency weight for class \(k\):
+
+\[
+w_k^{\text{raw}} = \frac{N}{K \cdot n_k}
+\]
+
+- If \(n_k\) is small, \(w_k^{\text{raw}}\) is large.  
+- If \(n_k\) is large, \(w_k^{\text{raw}}\) is small.
+
+Step 2: normalize so the average weight is 1 (optional but common):
+
+\[
+\bar{w} = \frac{1}{K} \sum_{k=0}^{K-1} w_k^{\text{raw}}
+\]
+
+\[
+w_k = \frac{w_k^{\text{raw}}}{\bar{w}}
+\]
+
+These \(w_k\) are what you pass as class weights to a loss function like cross‑entropy, or use as sampling weights.
+
+***
+
+## 3. Effective number of samples (class‑balanced loss)
+
+From the “Class‑Balanced Loss Based on Effective Number of Samples” paper, the effective number for a class with \(n_k\) samples is:
+
+\[
+E_k = \frac{1 - \beta^{n_k}}{1 - \beta}
+\]
+
+where \(\beta\) is a hyperparameter close to 1 (e.g. \(0.9999\)).
+
+Intuition:
+
+- When \(n_k\) is small, \(E_k\) is roughly proportional to \(n_k\) (few samples → each one is informative).  
+- When \(n_k\) is large, \(E_k\) saturates; adding more samples does not increase the “effective” amount of information as quickly.
+
+To turn this into a **weight** for class \(k\), invert and normalize:
+
+Step 1: raw effective‑number weight
+
+\[
+\alpha_k^{\text{raw}} = \frac{1 - \beta}{1 - \beta^{n_k}}
+\]
+
+Step 2: normalize the weights to mean 1:
+
+\[
+\bar{\alpha} = \frac{1}{K} \sum_{k=0}^{K-1} \alpha_k^{\text{raw}}
+\]
+
+\[
+\alpha_k = \frac{\alpha_k^{\text{raw}}}{\bar{\alpha}}
+\]
